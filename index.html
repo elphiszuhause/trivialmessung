@@ -69,7 +69,16 @@
 
         if (brandbar) {
           wrapper.appendChild(brandbar);
-        }
+
+      // Messpunktbezeichnung unter dem Logo anzeigen
+        const titleDiv = document.createElement("div");
+        titleDiv.style.textAlign = "center";
+        titleDiv.style.margin = "12px 0 8px 0";
+        titleDiv.style.fontSize = "16px";
+        titleDiv.style.fontWeight = "600";
+        titleDiv.textContent = filenameBase ? `Messpunkt: ${filenameBase}` : "";
+        wrapper.appendChild(titleDiv);
+      }
 
         const cloned = cloneForExport(reportEl);
         wrapper.appendChild(cloned);
