@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Trivialmessung – EN 16211 / DIN EN 12599 (Rund & Rechteck)</title>
+    <!-- React + Babel + Tailwind -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- PDF export libs -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <style>
+      .export-clone { font-size: 14px; line-height: 1.4; color: #000; }
+      .export-clone table { border-collapse: collapse; width: 100%; }
+      .export-clone th, .export-clone td { border: 1px solid #555; padding: 6px 8px; }
+      .export-clone thead th { background: #eaeaea; font-weight: 700; }
+      .export-clone .kpi { background: #f4f4f4; border: 1px solid #555; padding: 8px; border-radius: 6px; }
+      .export-clone .kpi .label { color: #333; font-size: 11px; }
+      .export-clone .kpi .value { font-size: 18px; font-weight: 700; }
+      .badge { border-radius: 9999px; padding: 2px 8px; font-size: 12px; font-weight: 600; }
+    </style>
+  </head>
+  <body class="bg-neutral-50 text-neutral-900">
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useMemo, useState, useEffect } = React;
+      const nf2 = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
+      const nf3 = new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 });
+
+      function toNumber(v, fallback = NaN) {
+        if (v === "" || v === null || v === undefined) return fallback;
+        const n = Number(String(v).replace(",", "."));
+        return Number.isFinite(n) ? n : fallback;
+      }
+
+      function downloadCSV(filename, rows) {
+        const csv = rows.map(r => r.map(x => `"${String(x ?? "").replaceAll('"','""')}"`).join(",")).join("\n");
+        const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = filename;
+        link.click();
+      }
+
+      function cloneForExport(node) {
+        const clone = node.cloneNode(true);
+        const inputs = clone.querySelectorAll('input');
+        inputs.forEach((inp) => {
+          const span = document.createElement('span');
+          span.textContent = inp.value || ' ';
+          span.style.display = 'inline-block';
+          span.style.minWidth = (inp.offsetWidth || 70) + 'px';
+          span.style.padding = '6px 8px';
+          span.style.border = '1px solid #555';
+          span.style.borderRadius = '4px';
+          span.style.background = '#fff';
+          span.style.textAlign = 'center';
+          inp.parentNode.replaceChild(span, inp);
+        });
+        clone.querySelectorAll('table').forEach(t => {
+          t.style.borderCollapse = 'collapse';
+          t.querySelectorAll('th,td').forEach(c => { c.style.border = '1px solid #555'; c.style.padding = '6px 8px'; });
+          const thead = t.querySelector('thead');
+          if (thead) thead.querySelectorAll('th').forEach(th => { th.style.background = '#eaeaea'; th.style.fontWeight = '700'; });
+        });
+        return clone;
+      }
+
+      async function exportDivToPDF(divId, filename = "Messprotokoll.pdf", landscape=false) {
+        const el = document.getElementById(divId);
+        const wrapper = document.createElement('div');
+        wrapper.className = 'export-clone';
+        const cloned = cloneForExport(el);
+        wrapper.appendChild(cloned);
+        const title = document.createElement('div');
+        title.textContent = 'Trivialmessung – EN 16211 / DIN EN 12599';
+        title.style.fontWeight = '700';
+        title.style.marginBottom = '8px';
+        title.style.fontSize = '16px';
+        wrapper.insertBefore(title, wrapper.firstChild);
+        document.body.appendChild(wrapper);
+        const scale = 3;
+        const canvas = await html2canvas(wrapper, { scale, backgroundColor: "#ffffff", useCORS: true, letterRendering: true });
+        document.body.removeChild(wrapper);
+
+        const pdf = new jspdf.jsPDF({ unit: "mm", format: "a4", orientation: landscape ? "landscape" : "portrait" });
+        const pageWidth = pdf.internal.pageSize.getWidth();
+        const pageHeight = pdf.internal.pageSize.getHeight();
+        const margin = 10;
+        const imgWidth = pageWidth - margin*2;
+        const s = imgWidth / canvas.width;
+        const pageHeightPx = (pageHeight - margin*2) / s;
+        let yOffset = 0;
+        let page = 0;
+        while (yOffset < canvas.height) {
+          const pageCanvas = document.createElement("canvas");
+          pageCanvas.width = canvas.width;
+          pageCanvas.height = Math.min(pageHeightPx, canvas.height - yOffset);
+          const ctx = pageCanvas.getContext("2d");
+          ctx.drawImage(canvas, 0, yOffset, canvas.width, pageCanvas.height, 0, 0, pageCanvas.width, pageCanvas.height);
+          const imgData = pageCanvas.toDataURL("image/png");
+          if (page > 0) pdf.addPage();
+          pdf.addImage(imgData, "PNG", margin, margin, imgWidth, pageCanvas.height * s);
+          yOffset += pageHeightPx;
+          page += 1;
+        }
+        pdf.save(filename);
+      }
+
+      /* ---------- helpers ---------- */
+      const TOL = 10; // DIN EN 12599 Funktionsprüfung ±10 %
+      const devStatus = (devPct) => (Number.isFinite(devPct) ? (Math.abs(devPct) <= TOL ? "ok" : "nok") : "na");
+
+      const cellClass = (val) => {
+        const n = toNumber(val);
+        if (Number.isFinite(n)) return "bg-blue-50 border-blue-300 focus:ring-blue-300";
+        if (val === "" || val === undefined) return "bg-white border-neutral-300 focus:ring-neutral-300";
+        return "bg-red-50 border-red-300 focus:ring-red-300";
+      };
+
+      /* ---------- ROUND DUCT ---------- */
+
+      function gridSuggestionRound(dmm) {
+        if (dmm <= 250) return { rings: 2, sectors: 3, points: 6 };
+        if (dmm <= 500) return { rings: 3, sectors: 4, points: 12 };
+        if (dmm <= 1000) return { rings: 4, sectors: 5, points: 20 };
+        return { rings: 5, sectors: 6, points: 30 };
+      }
+
+      function PolarInfographic({ rings, sectors, focus }) {
+        const size = 260;
+        const R = 110;
+        const cx = size/2, cy = size/2;
+        const radii = Array.from({length: rings}, (_,i)=> R * (i+1)/rings);
+        const angles = Array.from({length: sectors}, (_,j)=> (j * 2*Math.PI)/sectors);
+        const points = [];
+        for (let i=0; i<rings; i++) {
+          for (let j=0; j<sectors; j++) {
+            const rInner = i === 0 ? 0 : radii[i-1];
+            const rOuter = radii[i];
+            const rMid = (rInner + rOuter)/2;
+            const aStart = angles[j];
+            const aEnd = (j+1 < sectors) ? angles[j+1] : 2*Math.PI;
+            const aMid = (aStart + aEnd)/2;
+            const x = cx + rMid * Math.cos(aMid);
+            const y = cy + rMid * Math.sin(aMid);
+            points.push({x,y,i,j});
+          }
+        }
+        return (
+          <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="rounded-xl shadow bg-white">
+            <defs>
+              <linearGradient id="ringFill" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor="#eaf3ff" />
+                <stop offset="100%" stopColor="#f8fbff" />
+              </linearGradient>
+            </defs>
+            <rect x="0" y="0" width={size} height={size} rx="12" fill="url(#ringFill)" />
+            <circle cx={size/2} cy={size/2} r={R} fill="none" stroke="#2e6ee6" strokeWidth="2" />
+            {radii.slice(0,-1).map((r,idx)=>(
+              <circle key={idx} cx={size/2} cy={size/2} r={r} fill="none" stroke="#9ec1ff" strokeDasharray="4 4" />
+            ))}
+            {angles.map((a,idx)=>{
+              const x = size/2 + R*Math.cos(a);
+              const y = size/2 + R*Math.sin(a);
+              const thick = (focus && focus.type==='sector' && focus.j===idx) ? 2.5 : 1;
+              return <line key={idx} x1={size/2} y1={size/2} x2={x} y2={y} stroke="#5b8ef6" strokeDasharray="6 4" strokeWidth={thick} />;
+            })}
+            {points.map((p,idx)=>{
+              const active = focus && focus.type==='point' && focus.i===p.i && focus.j===p.j;
+              const r = active ? 7 : 4.5;
+              const fill = active ? "#ff3b30" : "#ff7a45";
+              return <circle key={idx} cx={p.x} cy={p.y} r={r} fill={fill} />;
+            })}
+            <circle cx={size/2} cy={size/2} r="3" fill="#2e6ee6" />
+          </svg>
+        );
+      }
+
+      function RoundTab() {
+        const [name, setName] = useState("");
+        const [dmm, setDmm] = useState("315");
+        const [plan, setPlan] = useState("650");
+        const [rings, setRings] = useState(3);
+        const [sectors, setSectors] = useState(4);
+        const [focus, setFocus] = useState(null);
+        const [cells, setCells] = useState(() => Array.from({ length: 6 }, () => Array.from({ length: 6 }, () => "")));
+
+        useEffect(() => {
+          const sugg = gridSuggestionRound(Number(toNumber(dmm, 0)));
+          setRings(sugg.rings);
+          setSectors(sugg.sectors);
+        }, [dmm]);
+
+        const d = Number(toNumber(dmm, 0)) / 1000;
+        const A = Math.PI * (d**2) / 4;
+        const Dh = d;
+        const upLen = 3 * Dh;
+        const downLen = 6 * Dh;
+
+        const active = useMemo(() => cells.slice(0, rings).map(r => r.slice(0, sectors)), [cells, rings, sectors]);
+        const values = active.flat().map(v => toNumber(v)).filter(v => Number.isFinite(v));
+        const vAvg = values.length ? values.reduce((a,b)=>a+b,0) / values.length : 0;
+        const Vdot = vAvg * A * 3600;
+        const planVal = Number(toNumber(plan, NaN));
+        const devPct = planVal > 0 ? ((Vdot - planVal)/planVal)*100 : NaN;
+        const status = devStatus(devPct);
+
+        function setCell(i, j, v) {
+          setCells(prev => {
+            const n = prev.map(r => r.slice());
+            n[i][j] = v;
+            return n;
+          });
+        }
+
+        const devBoxClass = status==="ok"
+          ? "border border-green-200 bg-green-50"
+          : (status==="nok" ? "border border-red-200 bg-red-50" : "border bg-neutral-50");
+
+        const badgeClass = status==="ok" ? "badge bg-green-600 text-white" :
+                           status==="nok" ? "badge bg-red-600 text-white" :
+                           "badge bg-neutral-400 text-white";
+
+        return (
+          <div className="space-y-4" id="round-section">
+            <div className="grid lg:grid-cols-2 gap-6">
+              <div className="bg-white rounded-2xl shadow p-4 space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="text-sm col-span-2">Messpunkt / Bezeichnung
+                    <input value={name} onChange={e=>setName(e.target.value)} className="mt-1 w-full rounded-xl border p-2 bg-yellow-50 border-yellow-300" placeholder="z. B. ZU-01, Flur EG" />
+                  </label>
+                  <label className="text-sm">Durchmesser d [mm]
+                    <input value={dmm} onChange={e=>setDmm(e.target.value)} className="mt-1 w-full rounded-xl border p-2 bg-blue-50 border-blue-300" inputMode="decimal" />
+                  </label>
+                  <label className="text-sm">Planwert V̇ [m³/h]
+                    <input value={plan} onChange={e=>setPlan(e.target.value)} className="mt-1 w-full rounded-xl border p-2 bg-blue-50 border-blue-300" inputMode="decimal" />
+                  </label>
+                  <div className="text-sm">d [m]
+                    <div className="mt-1 py-2 px-3 rounded-xl bg-neutral-100">{nf3.format(d)}</div>
+                  </div>
+                  <div className="text-sm">A [m²]
+                    <div className="mt-1 py-2 px-3 rounded-xl bg-neutral-100">{nf3.format(A)}</div>
+                  </div>
+                  <div className="text-sm col-span-2">Dh [m]
+                    <div className="mt-1 py-2 px-3 rounded-xl bg-neutral-100">{nf3.format(Dh)}</div>
+                  </div>
+                  <div className="text-sm">Upstream ≥ 3×Dh [m]
+                    <div className="mt-1 py-2 px-3 rounded-xl bg-neutral-100">{nf2.format(upLen)}</div>
+                  </div>
+                  <div className="text-sm">Downstream ≥ 6×Dh [m]
+                    <div className="mt-1 py-2 px-3 rounded-xl bg-neutral-100">{nf2.format(downLen)}</div>
+                  </div>
+                </div>
+              </div>
+              <div className="bg-white rounded-2xl shadow p-4">
+                <PolarInfographic rings={rings} sectors={sectors} focus={focus} />
+                <div className="text-sm mt-2 text-neutral-600">Orange Punkte = Messpositionen je Teilfläche • Gleich große Flächen → arithm. Mittelwert.</div>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl shadow p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h3 className="font-semibold text-lg">Messmatrix vᵢⱼ [m/s] (Ringe × Sektoren = {rings}×{sectors})</h3>
+                  <div className="text-xs text-neutral-500 mt-1">Toleranz gemäß DIN EN 12599 (Funktionsprüfung): ±{TOL} %</div>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={()=>exportDivToPDF('round-report','Rundkanal_Portrait.pdf', false)} className="px-3 py-2 rounded-xl border hover:bg-neutral-50">PDF Hoch</button>
+                  <button onClick={()=>exportDivToPDF('round-report','Rundkanal_Landscape.pdf', true)} className="px-3 py-2 rounded-xl border hover:bg-neutral-50">PDF Quer</button>
+                  <button onClick={()=>{
+                    const meta = [
+                      ["Messpunkt", name],["Durchmesser d [mm]", dmm],["d [m]", String(d)],["A [m²]", String(A)],["Dh [m]", String(Dh)],["Planwert [m³/h]", plan],["Raster", `${rings}x${sectors}`]
+                    ];
+                    const header = Array.from({ length: sectors }, (_, j) => `Sektor ${j+1}`);
+                    const rows = []; rows.push(["Rundkanal – Trivialmessung EN 16211 / DIN EN 12599"]);
+                    rows.push(["Hinweis:", "Funktionsprüfung ±10 %. Messstrecken: upstream ≥ 3×Dh, downstream ≥ 6×Dh. Gleich große Teilflächen."]);
+                    rows.push([""]); rows.push(["Meta-Daten"]); rows.push(["Schlüssel","Wert"]); meta.forEach(m=>rows.push(m));
+                    rows.push([""]); rows.push(["Messmatrix (Ringe × Sektoren)"]); rows.push(["Ring", ...header]);
+                    for (let i=0;i<rings;i++) rows.push([`R${i+1}`, ...Array.from({length: sectors}, (_,j)=> active[i][j] || "")]);
+                    rows.push([""]); rows.push(["Berechnungen"]);
+                    rows.push(["v_mittel [m/s]", String(vAvg)]); rows.push(["V̇ [m³/h]", String(Vdot)]); rows.push(["Abweichung [%]", Number.isFinite(devPct)?String(devPct):""]);
+                    rows.push(["Upstream ≥ 3×Dh [m]", String(upLen)]); rows.push(["Downstream ≥ 6×Dh [m]", String(downLen)]);
+                    downloadCSV("Rundkanal_Trivialmessung.csv", rows);
+                  }} className="px-3 py-2 rounded-xl bg-neutral-900 text-white hover:bg-neutral-800">CSV exportieren</button>
+                </div>
+              </div>
+              <div id="round-report">
+                <div className="text-sm mb-2">Messpunkt: <b>{name || "—"}</b></div>
+                <div className="overflow-auto">
+                  <table className="min-w-full border text-sm">
+                    <thead className="bg-neutral-100">
+                      <tr>
+                        <th className="border px-2 py-1">Ring \\ Sektor</th>
+                        {Array.from({length: sectors}).map((_,j)=>(
+                          <th key={j} className="border px-2 py-1">S{j+1}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Array.from({length: rings}).map((_,i)=>(
+                        <tr key={i}>
+                          <td className="border px-2 py-1 font-semibold">R{i+1}</td>
+                          {Array.from({length: sectors}).map((_,j)=>(
+                            <td key={j} className="border px-2 py-1">
+                              <input value={active[i][j] ?? ""}
+                                onChange={e=>setCell(i,j,e.target.value)}
+                                onFocus={()=>setFocus({type:'point', i, j})}
+                                inputMode="decimal"
+                                className={`w-24 rounded border p-1 text-center ${cellClass(active[i][j])}`}
+                                placeholder={`v m/s`} />
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="grid md:grid-cols-3 gap-4 mt-3">
+                  <div className="rounded-xl p-3 border bg-sky-50 border-sky-200">
+                    <div className="text-xs text-sky-700">Mittelgeschwindigkeit</div>
+                    <div className="text-xl font-semibold text-sky-900">{nf2.format(vAvg)} m/s</div>
+                  </div>
+                  <div className="rounded-xl p-3 border bg-sky-50 border-sky-200">
+                    <div className="text-xs text-sky-700">Volumenstrom V̇</div>
+                    <div className="text-xl font-semibold text-sky-900">{nf2.format(Vdot)} m³/h</div>
+                  </div>
+                  <div className={`rounded-xl p-3 ${devBoxClass}`}>
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs text-neutral-700">Abweichung zu Plan</div>
+                      <span className={badgeClass}>{status==="ok" ? "OK" : (status==="nok" ? "NICHT OK" : "—")}</span>
+                    </div>
+                    <div className="text-xl font-semibold">{Number.isFinite(devPct) ? `${nf2.format(devPct)} %` : "–"}</div>
+                    <div className="text-xs mt-1 text-neutral-600">Grenze: ±{TOL}%</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      /* ---------- RECT DUCT ---------- */
+
+      function gridSuggestionRect(bmm, hmm) {
+        const maxEdge = Math.max(bmm, hmm);
+        if (maxEdge <= 400) return { rows: 3, cols: 3, points: 9 };
+        if (maxEdge <= 800) return { rows: 4, cols: 4, points: 16 };
+        return { rows: 5, cols: 5, points: 25 };
+      }
+
+      function RectInfographic({ rows, cols, focus }) {
+        const W = 300, H = 220, pad = 20;
+        const gx = (W - 2*pad) / cols;
+        const gy = (H - 2*pad) / rows;
+        const points = [];
+        for (let i=0;i<rows;i++) {
+          for (let j=0;j<cols;j++) {
+            const x = pad + (j+0.5)*gx;
+            const y = pad + (i+0.5)*gy;
+            points.push({x,y,i,j});
+          }
+        }
+        return (
+          <svg width={W} height={H} className="rounded-xl shadow bg-white">
+            <rect x="0" y="0" width={W} height={H} rx="12" fill="#f8fbff" />
+            <rect x={pad} y={pad} width={W-2*pad} height={H-2*pad} fill="none" stroke="#2e6ee6" strokeWidth="2" />
+            {Array.from({length: cols-1}).map((_,j)=>{
+              const x = pad + (j+1)*gx;
+              const thick = (focus && focus.type==='col' && focus.j===j+1) ? 2.5 : 1;
+              return <line key={"v"+j} x1={x} y1={pad} x2={x} y2={H-pad} stroke="#9ec1ff" strokeDasharray="4 4" strokeWidth={thick}/>;
+            })}
+            {Array.from({length: rows-1}).map((_,i)=>{
+              const y = pad + (i+1)*gy;
+              const thick = (focus && focus.type==='row' && focus.i===i+1) ? 2.5 : 1;
+              return <line key={"h"+i} x1={pad} y1={y} x2={W-pad} y2={y} stroke="#9ec1ff" strokeDasharray="4 4" strokeWidth={thick}/>;
+            })}
+            {points.map((p,idx)=>{
+              const active = focus && focus.type==='point' && focus.i===p.i && focus.j===p.j;
+              const r = active ? 7 : 4.5;
+              const fill = active ? "#ff3b30" : "#ff7a45";
+              return <circle key={idx} cx={p.x} cy={p.y} r={r} fill={fill} />;
+            })}
+          </svg>
+        );
+      }
+
+      function RectTab() {
+        const [name, setName] = useState("");
+        const [bmm, setBmm] = useState("400");
+        const [hmm, setHmm] = useState("200");
+        const [plan, setPlan] = useState("650");
+        const [rows, setRows] = useState(5);
+        const [cols, setCols] = useState(5);
+        const [focus, setFocus] = useState(null);
+        const [cells, setCells] = useState(() => Array.from({ length: 5 }, () => Array.from({ length: 5 }, () => "")));
+
+        useEffect(() => {
+          const sugg = gridSuggestionRect(Number(toNumber(bmm, 0)), Number(toNumber(hmm, 0)));
+          setRows(sugg.rows); setCols(sugg.cols);
+        }, [bmm, hmm]);
+
+        const b = Number(toNumber(bmm, 0))/1000, h = Number(toNumber(hmm, 0))/1000;
+        const A = b*h;
+        const Dh = (A===0) ? 0 : (2*b*h)/(b+h);
+        const upLen = 3 * Dh;
+        const downLen = 6 * Dh;
+
+        const active = useMemo(() => cells.slice(0, rows).map(r => r.slice(0, cols)), [cells, rows, cols]);
+        const values = active.flat().map(v => toNumber(v)).filter(v => Number.isFinite(v));
+        const vAvg = values.length ? values.reduce((a,b)=>a+b,0) / values.length : 0;
+        const Vdot = vAvg * A * 3600;
+        const planVal = Number(toNumber(plan, NaN));
+        const devPct = planVal > 0 ? ((Vdot - planVal)/planVal)*100 : NaN;
+        const status = devStatus(devPct);
+
+        function setCell(i, j, v) {
+          setCells(prev => {
+            const n = prev.map(r => r.slice());
+            n[i][j] = v;
+            return n;
+          });
+        }
+
+        const devBoxClass = status==="ok"
+          ? "border border-green-200 bg-green-50"
+          : (status==="nok" ? "border border-red-200 bg-red-50" : "border bg-neutral-50");
+
+        const badgeClass = status==="ok" ? "badge bg-green-600 text-white" :
+                           status==="nok" ? "badge bg-red-600 text-white" :
+                           "badge bg-neutral-400 text-white";
+
+        return (
+          <div className="space-y-4" id="rect-section">
+            <div className="grid lg:grid-cols-2 gap-6">
+              <div className="bg-white rounded-2xl shadow p-4 space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="text-sm col-span-2">Messpunkt / Bezeichnung
+                    <input value={name} onChange={e=>setName(e.target.value)} className="mt-1 w-full rounded-xl border p-2 bg-yellow-50 border-yellow-300" placeholder="z. B. AB-03, Musikraum" />
+                  </label>
+                  <label className="text-sm">Breite b [mm]
+                    <input value={bmm} onChange={e=>setBmm(e.target.value)} className="mt-1 w-full rounded-xl border p-2 bg-blue-50 border-blue-300" inputMode="decimal" />
+                  </label>
+                  <label className="text-sm">Höhe h [mm]
+                    <input value={hmm} onChange={e=>setHmm(e.target.value)} className="mt-1 w-full rounded-xl border p-2 bg-blue-50 border-blue-300" inputMode="decimal" />
+                  </label>
+                  <label className="text-sm">Planwert V̇ [m³/h]
+                    <input value={plan} onChange={e=>setPlan(e.target.value)} className="mt-1 w-full rounded-xl border p-2 bg-blue-50 border-blue-300" inputMode="decimal" />
+                  </label>
+                  <div className="text-sm">b [m]
+                    <div className="mt-1 py-2 px-3 rounded-xl bg-neutral-100">{nf3.format(b)}</div>
+                  </div>
+                  <div className="text-sm">h [m]
+                    <div className="mt-1 py-2 px-3 rounded-xl bg-neutral-100">{nf3.format(h)}</div>
+                  </div>
+                  <div className="text-sm col-span-2">Dh [m]
+                    <div className="mt-1 py-2 px-3 rounded-xl bg-neutral-100">{nf3.format(Dh)}</div>
+                  </div>
+                  <div className="text-sm">Upstream ≥ 3×Dh [m]
+                    <div className="mt-1 py-2 px-3 rounded-xl bg-neutral-100">{nf2.format(upLen)}</div>
+                  </div>
+                  <div className="text-sm">Downstream ≥ 6×Dh [m]
+                    <div className="mt-1 py-2 px-3 rounded-xl bg-neutral-100">{nf2.format(downLen)}</div>
+                  </div>
+                </div>
+              </div>
+              <div className="bg-white rounded-2xl shadow p-4">
+                <RectInfographic rows={rows} cols={cols} focus={focus} />
+                <div className="text-sm mt-2 text-neutral-600">Orange Punkte = Messpositionen je Teilfläche • Gleich große Flächen → arithm. Mittelwert.</div>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl shadow p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h3 className="font-semibold text-lg">Messmatrix vᵢⱼ [m/s] (Zeilen × Spalten = {rows}×{cols})</h3>
+                  <div className="text-xs text-neutral-500 mt-1">Toleranz gemäß DIN EN 12599 (Funktionsprüfung): ±{TOL} %</div>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={()=>exportDivToPDF('rect-report','Rechteckkanal_Portrait.pdf', false)} className="px-3 py-2 rounded-xl border hover:bg-neutral-50">PDF Hoch</button>
+                  <button onClick={()=>exportDivToPDF('rect-report','Rechteckkanal_Landscape.pdf', true)} className="px-3 py-2 rounded-xl border hover:bg-neutral-50">PDF Quer</button>
+                  <button onClick={()=>{
+                    const meta = [["Messpunkt", name],["Breite b [mm]", bmm],["Höhe h [mm]", hmm],["b [m]", String(b)],["h [m]", String(h)],["A [m²]", String(A)],["Dh [m]", String(Dh)],["Planwert [m³/h]", plan],["Raster", `${rows}x${cols}`]];
+                    const header = Array.from({ length: cols }, (_, j) => `Spalte ${j+1}`);
+                    const out = []; out.push(["Rechteckkanal – Trivialmessung EN 16211 / DIN EN 12599"]);
+                    out.push(["Hinweis:", "Funktionsprüfung ±10 %. Messstrecken: upstream ≥ 3×Dh, downstream ≥ 6×Dh. Gleich große Teilflächen."]);
+                    out.push([""]); out.push(["Meta-Daten"]); out.push(["Schlüssel","Wert"]); meta.forEach(m=>out.push(m));
+                    out.push([""]); out.push(["Messmatrix (Zeilen × Spalten)"]); out.push(["Zeile", ...header]);
+                    for (let i=0;i<rows;i++) out.push([`Z${i+1}`, ...Array.from({length: cols}, (_,j)=> active[i][j] || "")]);
+                    out.push([""]); out.push(["Berechnungen"]);
+                    out.push(["v_mittel [m/s]", String(vAvg)]); out.push(["V̇ [m³/h]", String(Vdot)]); out.push(["Abweichung [%]", Number.isFinite(devPct)?String(devPct):""]);
+                    out.push(["Upstream ≥ 3×Dh [m]", String(upLen)]); out.push(["Downstream ≥ 6×Dh [m]", String(downLen)]);
+                    downloadCSV("Rechteckkanal_Trivialmessung.csv", out);
+                  }} className="px-3 py-2 rounded-xl bg-neutral-900 text-white hover:bg-neutral-800">CSV exportieren</button>
+                </div>
+              </div>
+              <div id="rect-report">
+                <div className="text-sm mb-2">Messpunkt: <b>{name || "—"}</b></div>
+                <div className="overflow-auto">
+                  <table className="min-w-full border text-sm">
+                    <thead className="bg-neutral-100">
+                      <tr>
+                        <th className="border px-2 py-1">Zeile \\ Spalte</th>
+                        {Array.from({length: cols}).map((_,j)=>(
+                          <th key={j} className="border px-2 py-1">S{j+1}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Array.from({length: rows}).map((_,i)=>(
+                        <tr key={i}>
+                          <td className="border px-2 py-1 font-semibold">Z{i+1}</td>
+                          {Array.from({length: cols}).map((_,j)=>(
+                            <td key={j} className="border px-2 py-1">
+                              <input value={active[i][j] ?? ""}
+                                onChange={e=>setCell(i,j,e.target.value)}
+                                onFocus={()=>setFocus({type:'point', i, j})}
+                                inputMode="decimal"
+                                className={`w-24 rounded border p-1 text-center ${cellClass(active[i][j])}`}
+                                placeholder={`v m/s`} />
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="grid md:grid-cols-3 gap-4 mt-3">
+                  <div className="rounded-xl p-3 border bg-sky-50 border-sky-200">
+                    <div className="text-xs text-sky-700">Mittelgeschwindigkeit</div>
+                    <div className="text-xl font-semibold text-sky-900">{nf2.format(vAvg)} m/s</div>
+                  </div>
+                  <div className="rounded-xl p-3 border bg-sky-50 border-sky-200">
+                    <div className="text-xs text-sky-700">Volumenstrom V̇</div>
+                    <div className="text-xl font-semibold text-sky-900">{nf2.format(Vdot)} m³/h</div>
+                  </div>
+                  <div className={`rounded-xl p-3 ${devBoxClass}`}>
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs text-neutral-700">Abweichung zu Plan</div>
+                      <span className={badgeClass}>{status==="ok" ? "OK" : (status==="nok" ? "NICHT OK" : "—")}</span>
+                    </div>
+                    <div className="text-xl font-semibold">{Number.isFinite(devPct) ? `${nf2.format(devPct)} %` : "–"}</div>
+                    <div className="text-xs mt-1 text-neutral-600">Grenze: ±{TOL}%</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      /* ---------- APP ROOT ---------- */
+
+      function App() {
+        const [tab, setTab] = useState("round");
+        return (
+          <div className="min-h-screen bg-neutral-50 text-neutral-900 p-6">
+            <div className="max-w-6xl mx-auto space-y-6">
+              <header className="flex items-center justify-between">
+                <h1 className="text-2xl font-bold">Trivialmessung – EN 16211 / DIN EN 12599</h1>
+                <div className="text-sm text-neutral-500">Funktionsprüfung ±10 % • Upstream ≥ 3×Dh • Downstream ≥ 6×Dh</div>
+              </header>
+
+              <nav className="bg-white rounded-2xl shadow p-1 flex gap-1 w-full md:w-auto">
+                <button onClick={()=>setTab('round')} className={`px-4 py-2 rounded-xl ${tab==='round' ? 'bg-neutral-900 text-white' : 'hover:bg-neutral-100'}`}>Rundkanal</button>
+                <button onClick={()=>setTab('rect')} className={`px-4 py-2 rounded-xl ${tab==='rect' ? 'bg-neutral-900 text-white' : 'hover:bg-neutral-100'}`}>Rechteckkanal</button>
+              </nav>
+
+              {tab === 'round' ? <RoundTab /> : <RectTab />}
+
+              <footer className="text-xs text-neutral-500">
+                Hinweis: Diese App bildet das vereinfachte Verfahren für Funktionsprüfungen ab (DIN EN 12599, Verweis EN 16211). Für Leistungsnachweise präzisere Verfahren (Traversierung, Pitot, normgerechte Ein-/Auslaufstrecken) verwenden.
+              </footer>
+            </div>
+          </div>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+    </script>
+  </body>
+</html>
